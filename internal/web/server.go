@@ -1074,52 +1074,39 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
-	if accountID == "" {
-		// Failover mode: prefer the last healthy account, only rotate on failure
-		s.mu.Lock()
-		preferred := s.lastHealthyAccount
-		s.mu.Unlock()
-		if preferred != "" && s.accountAvailable(preferred) && s.accountPool.Available(preferred) && s.accountConcurrency.Available(preferred) {
-			if acc, err := s.tokens.EnsureValid(preferred); err == nil {
-				accountID = preferred
-				return acc, nil
-			}
+	if accountID != "" {
+		result, err := s.tokens.EnsureValid(accountID)
+		if err == nil {
+			s.mu.Lock()
+			s.lastHealthyAccount = accountID
+			s.mu.Unlock()
 		}
-		// No preferred account or it's unavailable; fall back to round-robin
+		return result, err
+	}
+
+	// Multi-account load balancing mode: round-robin through enabled & available accounts
+	for i := 0; i < maxAccountProbe; i++ {
 		acc, ok := s.tokens.Next()
 		if !ok {
 			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
 		}
-		accountID = acc.ID
-		for i := 0; !s.accountAvailable(accountID) && i < maxAccountProbe; i++ {
-			acc, ok = s.tokens.Next()
-			if !ok {
-				break
+		if s.accountAvailable(acc.ID) {
+			result, err := s.tokens.EnsureValid(acc.ID)
+			if err == nil {
+				s.mu.Lock()
+				s.lastHealthyAccount = acc.ID
+				s.mu.Unlock()
+				return result, nil
 			}
-			accountID = acc.ID
-		}
-		if !s.tokens.ScheduleEnabled(accountID) {
-			return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
-		}
-		if !s.accountPool.Available(accountID) {
-			until := s.accountPool.EarliestRecovery()
-			retry := int(time.Until(until).Seconds())
-			if retry < 5 {
-				retry = 5
-			}
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
-		}
-		if !s.accountConcurrency.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "all accounts are at their concurrency limit; try again shortly"}
 		}
 	}
-	result, err := s.tokens.EnsureValid(accountID)
-	if err == nil {
-		s.mu.Lock()
-		s.lastHealthyAccount = accountID
-		s.mu.Unlock()
+
+	until := s.accountPool.EarliestRecovery()
+	retry := int(time.Until(until).Seconds())
+	if retry < 5 {
+		retry = 5
 	}
-	return result, err
+	return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down or unavailable; try again later"}
 }
 
 // nextHealthyAccount returns the next round-robin account that is still
@@ -1143,6 +1130,7 @@ func (s *Server) nextHealthyAccount(avoidID string) (auth.AccountToken, error) {
 }
 
 type chatBody struct {
+	Model                 string                   `json:"model,omitempty"`
 	AccountID             string                   `json:"accountId"`
 	Message               string                   `json:"message"`
 	Prompt                string                   `json:"prompt"`

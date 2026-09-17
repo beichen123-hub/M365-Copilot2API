@@ -437,9 +437,15 @@ func (s *Store) Next() (AccountToken, bool) {
 	if n == 0 {
 		return AccountToken{}, false
 	}
-	acc := s.data.Accounts[s.nextIdx%n]
-	s.nextIdx = (s.nextIdx + 1) % n
-	return acc, true
+	for i := 0; i < n; i++ {
+		idx := s.nextIdx % n
+		acc := s.data.Accounts[idx]
+		s.nextIdx = (idx + 1) % n
+		if !acc.ScheduleDisabled && acc.Status != "disabled" && acc.Status != "expired" {
+			return acc, true
+		}
+	}
+	return AccountToken{}, false
 }
 
 func (s *Store) EnsureValid(id string) (AccountToken, error) {

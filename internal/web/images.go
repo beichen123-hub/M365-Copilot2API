@@ -92,38 +92,78 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		size = "1024x1024"
 	}
 	endpoint := "/v1/images/generations"
-	prompt := fmt.Sprintf("Generate an image with GPT Image 2. Size: %s. Description: %s. Return the image URL directly.", size, b.Prompt)
+	prompt := fmt.Sprintf("Create an image: %s (Size: %s). Return the image directly.", b.Prompt, size)
 	if b.Operation == "edit" {
 		if len(b.Attachments) == 0 {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "image is required")
 			return
 		}
 		endpoint = "/v1/images/edits"
-		prompt = fmt.Sprintf("Edit the first attached image with GPT Image 2. Size: %s. Instructions: %s. Preserve everything not requested to change. Return the edited image URL directly.", size, b.Prompt)
+		prompt = fmt.Sprintf("Edit the attached image: %s (Size: %s). Return the image directly.", b.Prompt, size)
 	}
-	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{Text: prompt, Tone: "magic", Attachments: b.Attachments, LicenseType: s.settings.get().LicenseType, Scenario: s.settings.get().Scenario, FeatureFlags: s.featureFlags()})
-	if err != nil {
-		writeUpstreamError(w, err)
-		return
-	}
-	log.Printf("[image-gen] conversation=%s images=%d text_len=%d events=%d raw_len=%d", res.ConversationID, len(res.Images), len(res.Text), len(res.Events), len(res.RawResult))
-	if len(res.Images) == 0 {
-		if urls := extractImageURLs(res.RawResult); len(urls) > 0 {
-			res.Images = urls
-		}
-	}
-	if len(res.Images) == 0 {
-		if urls := extractImageURLs(res.Text); len(urls) > 0 {
-			res.Images = urls
-		}
-	}
-	if len(res.Images) == 0 {
-		refusalText := strings.Join([]string{res.Text, res.RawResult}, "\n")
-		if isImageQuotaRefusal(refusalText) {
-			w.Header().Set("Retry-After", "86400")
-			writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "M365 image generation quota is exhausted; try again later or use another account")
+
+	var res chathub.Result
+	var lastErr error
+	currentAcc := acc
+	for attempt := 0; attempt < maxAccountProbe; attempt++ {
+		res, err = s.chatWithAccount(ctx, currentAcc.ID, chathub.Account{AccessToken: currentAcc.AccessToken, OID: currentAcc.OID, TID: currentAcc.TID}, chathub.Request{Text: prompt, Tone: "Magic", Attachments: b.Attachments, LicenseType: s.settings.get().LicenseType, Scenario: s.settings.get().Scenario, FeatureFlags: s.featureFlags()})
+		if err != nil {
+			if errors.Is(err, chathub.ErrImageLimit) && s.accountPool != nil {
+				s.accountPool.MarkImageLimited(currentAcc.ID)
+			}
+			lastErr = err
+			if b.AccountID == "" {
+				if next, nerr := s.nextHealthyAccount(currentAcc.ID); nerr == nil {
+					currentAcc = next
+					continue
+				}
+			}
+			writeUpstreamError(w, err)
 			return
 		}
+
+		log.Printf("[image-gen] account=%s conversation=%s images=%d text_len=%d events=%d raw_len=%d", currentAcc.ID, res.ConversationID, len(res.Images), len(res.Text), len(res.Events), len(res.RawResult))
+		if len(res.Images) == 0 {
+			if urls := extractImageURLs(res.RawResult); len(urls) > 0 {
+				res.Images = urls
+			}
+		}
+		if len(res.Images) == 0 {
+			if urls := extractImageURLs(res.Text); len(urls) > 0 {
+				res.Images = urls
+			}
+		}
+		if len(res.Images) == 0 {
+			refusalText := strings.Join([]string{res.Text, res.RawResult}, "\n")
+			if isImageQuotaRefusal(refusalText) {
+				if s.accountPool != nil {
+					s.accountPool.MarkImageLimited(currentAcc.ID)
+				}
+				if b.AccountID == "" {
+					if next, nerr := s.nextHealthyAccount(currentAcc.ID); nerr == nil {
+						currentAcc = next
+						continue
+					}
+				}
+				w.Header().Set("Retry-After", "86400")
+				writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "M365 image generation quota is exhausted; try again later or use another account")
+				return
+			}
+		}
+		if len(res.Images) > 0 {
+			acc = currentAcc
+			break
+		}
+		if b.AccountID == "" {
+			if next, nerr := s.nextHealthyAccount(currentAcc.ID); nerr == nil {
+				currentAcc = next
+				continue
+			}
+		}
+		break
+	}
+
+	if len(res.Images) == 0 {
 		textPreview := res.Text
 		if len(textPreview) > 500 {
 			textPreview = textPreview[:500]
@@ -135,7 +175,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 				rawPreview = rawPreview[:500]
 			}
 		}
-		debug := map[string]any{"text": textPreview, "raw_len": len(res.RawResult), "events": len(res.Events), "images": res.Images, "raw_preview": rawPreview}
+		debug := map[string]any{"text": textPreview, "raw_len": len(res.RawResult), "events": len(res.Events), "images": res.Images, "raw_preview": rawPreview, "last_err": fmt.Sprint(lastErr)}
 		b, _ := json.Marshal(debug)
 		log.Printf("[image-gen-debug] %s", string(b))
 		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream returned no image resource")
@@ -446,41 +486,72 @@ func isImageQuotaRefusal(text string) bool {
 	return false
 }
 
-// extractImageURLs finds image URLs in a raw JSON string by searching for URL patterns.
+// extractImageURLs finds image URLs in raw JSON or plain text/markdown by searching for URL patterns.
 func extractImageURLs(raw string) []string {
 	if raw == "" {
 		return nil
 	}
 	var out []string
 	seen := map[string]bool{}
-	var v any
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return nil
+
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		s = strings.TrimRight(s, ".,;:!?")
+		s = strings.Trim(s, `"'<>[]{}()`)
+		if s == "" || seen[s] {
+			return
+		}
+		low := strings.ToLower(s)
+		if strings.HasPrefix(low, "data:image/") {
+			seen[s] = true
+			out = append(out, s)
+			return
+		}
+		if !strings.HasPrefix(low, "http://") && !strings.HasPrefix(low, "https://") {
+			return
+		}
+		if strings.Contains(low, "designerapp.officeapps.live.com") || strings.Contains(low, "bing.com/th") || strings.Contains(low, "bing.com/images") || strings.Contains(low, "dalle") || strings.Contains(low, "image") || strings.HasSuffix(low, ".png") || strings.HasSuffix(low, ".jpg") || strings.HasSuffix(low, ".jpeg") || strings.HasSuffix(low, ".webp") || strings.HasSuffix(low, ".gif") {
+			seen[s] = true
+			out = append(out, s)
+		}
 	}
-	var walk func(any)
-	walk = func(v any) {
-		switch x := v.(type) {
-		case []any:
-			for _, e := range x {
-				walk(e)
-			}
-		case map[string]any:
-			for k, e := range x {
-				lk := strings.ToLower(k)
-				if s, ok := e.(string); ok && (lk == "url" || lk == "imageurl" || lk == "thumbnailurl" || lk == "downloadurl" || lk == "src" || lk == "value" || lk == "data") {
-					if strings.HasPrefix(s, "https://") && !seen[s] {
-						if strings.Contains(strings.ToLower(s), "image") || strings.HasSuffix(strings.ToLower(s), ".png") || strings.HasSuffix(strings.ToLower(s), ".jpg") || strings.HasSuffix(strings.ToLower(s), ".jpeg") || strings.HasSuffix(strings.ToLower(s), ".webp") || strings.HasSuffix(strings.ToLower(s), ".gif") {
-							seen[s] = true
-							out = append(out, s)
-						}
-					}
-				} else {
+
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err == nil {
+		var walk func(any)
+		walk = func(v any) {
+			switch x := v.(type) {
+			case []any:
+				for _, e := range x {
 					walk(e)
+				}
+			case map[string]any:
+				for k, e := range x {
+					lk := strings.ToLower(k)
+					if s, ok := e.(string); ok && (lk == "url" || lk == "imageurl" || lk == "thumbnailurl" || lk == "downloadurl" || lk == "src" || lk == "value" || lk == "data") {
+						add(s)
+					} else {
+						walk(e)
+					}
 				}
 			}
 		}
+		walk(v)
 	}
-	walk(v)
+
+	// Supplementary regex scanning for markdown image tags ![alt](url) and plain https image URLs
+	mdRegex := regexp.MustCompile(`!\[.*?\]\((https?://[^\s\)]+)\)`)
+	for _, m := range mdRegex.FindAllStringSubmatch(raw, -1) {
+		if len(m) > 1 {
+			add(m[1])
+		}
+	}
+
+	urlRegex := regexp.MustCompile(`https?://[^\s"<>\)]+`)
+	for _, u := range urlRegex.FindAllString(raw, -1) {
+		add(u)
+	}
+
 	return out
 }
 
