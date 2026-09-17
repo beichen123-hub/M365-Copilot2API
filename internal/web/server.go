@@ -2010,8 +2010,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			text.WriteString(ev.Text)
 			return emitText(ev.Text)
 		})
-		if err != nil && text.Len() == 0 && len(streamedTools) == 0 && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
+		if err != nil && (text.Len() < 50 || IsImageLimitErr(err)) && len(streamedTools) == 0 && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
 			originalErr := err
+			if IsImageLimitErr(originalErr) && s.accountPool != nil {
+				s.accountPool.MarkImageLimited(acc.ID)
+			}
 			// A throttled stream may retry on the next healthy account: only the
 			// ": connected" preamble reached the client, so the retried stream is
 			// indistinguishable from a fresh request.
@@ -2049,17 +2052,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					return emitText(ev.Text)
 				})
 				if err2 == nil {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
+					if IsImageLimitErr(originalErr) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
 					}
 					res = res2
 					acc = next
 					err = nil
 				} else {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
+					if IsImageLimitErr(originalErr) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
 					}
-					if errors.Is(err2, chathub.ErrImageLimit) && s.accountPool != nil {
+					if IsImageLimitErr(err2) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(next.ID)
 					}
 					err = err2
@@ -2068,7 +2071,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
-			if errors.Is(err, chathub.ErrImageLimit) && s.accountPool != nil {
+			if IsImageLimitErr(err) && s.accountPool != nil {
 				s.accountPool.MarkImageLimited(acc.ID)
 			}
 			if convReused {
@@ -2444,8 +2447,11 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				err = nil
 			}
 		}
-		if err != nil && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
+		if err != nil && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
 			originalErr := err
+			if IsImageLimitErr(originalErr) && s.accountPool != nil {
+				s.accountPool.MarkImageLimited(acc.ID)
+			}
 			// Failover only when nothing pins the request to a conversation or
 			// account; a fresh chat can safely retry on the next healthy account.
 			next, nerr := s.nextHealthyAccount(acc.ID)
@@ -2459,17 +2465,17 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				defer cancel2()
 				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
 				if err2 == nil {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
+					if IsImageLimitErr(originalErr) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
 					}
 					res = res2
 					acc = next
 					err = nil
 				} else {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
+					if IsImageLimitErr(originalErr) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
 					}
-					if errors.Is(err2, chathub.ErrImageLimit) && s.accountPool != nil {
+					if IsImageLimitErr(err2) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(next.ID)
 					}
 					err = err2
@@ -2478,7 +2484,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	}
 	if err != nil {
-		if errors.Is(err, chathub.ErrImageLimit) && s.accountPool != nil {
+		if IsImageLimitErr(err) && s.accountPool != nil {
 			s.accountPool.MarkImageLimited(acc.ID)
 		}
 		if convReused {

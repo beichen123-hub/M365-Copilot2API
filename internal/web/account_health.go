@@ -178,11 +178,26 @@ func ClassifyError(err error) ErrorCategory {
 	return CategoryUnknown
 }
 
+func IsImageLimitErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, chathub.ErrImageLimit) || errors.Is(err, chathub.ErrMeteringThrottled) {
+		return true
+	}
+	low := strings.ToLower(err.Error())
+	return strings.Contains(low, "metering throttle") || strings.Contains(low, "image limit") || strings.Contains(low, "capability access denied")
+}
+
 func IsRateLimited(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, chathub.ErrRateLimitNotice) || errors.Is(err, chathub.ErrMeteringThrottled) {
+	if errors.Is(err, chathub.ErrRateLimitNotice) || errors.Is(err, chathub.ErrMeteringThrottled) || errors.Is(err, chathub.ErrImageLimit) {
+		return true
+	}
+	low := strings.ToLower(err.Error())
+	if strings.Contains(low, "metering throttle") || strings.Contains(low, "rate limit") || strings.Contains(low, "throttled") || strings.Contains(low, "capability access denied") {
 		return true
 	}
 	var httpErr *UpstreamHTTPError
