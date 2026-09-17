@@ -318,7 +318,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
       <button data-page="logs" onclick="showPage('logs')"><i data-lucide="file-text" style="width:16px;height:16px;flex-shrink:0"></i><span>System Logs</span></button>
       <button data-page="settings" onclick="showPage('settings')"><i data-lucide="settings" style="width:16px;height:16px;flex-shrink:0"></i><span>Settings</span></button>
     </nav>
-    <div class="sidebar-foot">v0.4.0</div>
+    <div class="sidebar-foot" id="sidebarVersion">v0.4.0</div>
   </aside>
 
   <main class="main">
@@ -1058,7 +1058,18 @@ async function logout(){
   location.reload();
 }
 
+async function loadVersion(){
+  try{
+    const d=await api('/api/version');
+    if(d&&d.version){
+      const v=String(d.version).startsWith('v')?d.version:'v'+d.version;
+      if($('sidebarVersion')) $('sidebarVersion').textContent=v;
+    }
+  }catch(e){}
+}
+
 async function loadStats(){
+  loadVersion();
   try{
     const [d,u]=await Promise.all([api('/api/stats'),api('/api/usage?days=365')]);
     const s=d.stats||{};
