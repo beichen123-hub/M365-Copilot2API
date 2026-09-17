@@ -277,8 +277,8 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 				"accountId":      managed.AccountID,
 				"accountEmail":   accountEmail,
 				"chatName":       title,
-				"createdAt":      managed.LastActive,
-				"updatedAt":      managed.LastActive,
+				"createdAt":      managed.CreatedAt,
+				"updatedAt":      managed.LastUsedAt,
 				"messageCount":   0,
 				"messages":       []any{},
 			})
