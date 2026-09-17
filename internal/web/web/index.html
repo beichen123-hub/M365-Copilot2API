@@ -315,6 +315,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
     <nav class="nav">
       <button data-page="proxies" onclick="showPage('proxies')"><i data-lucide="globe" style="width:16px;height:16px;flex-shrink:0"></i><span>Proxy Pool</span></button>
       <button data-page="modeltest" onclick="showPage('modeltest')"><i data-lucide="flask-conical" style="width:16px;height:16px;flex-shrink:0"></i><span>Model Test</span></button>
+      <button data-page="logs" onclick="showPage('logs')"><i data-lucide="file-text" style="width:16px;height:16px;flex-shrink:0"></i><span>System Logs</span></button>
       <button data-page="settings" onclick="showPage('settings')"><i data-lucide="settings" style="width:16px;height:16px;flex-shrink:0"></i><span>Settings</span></button>
     </nav>
     <div class="sidebar-foot">v0.4.0</div>
@@ -618,6 +619,25 @@ if (response.output_text) {
         </div>
       </section>
 
+      <!-- System Logs -->
+      <section id="page-logs" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap">
+          <div><h2 style="font-size:18px;font-weight:700">System Logs</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">查看系统运行日志、API 调用记录与历史调试信息</p></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input class="form-input" id="logSearchInput" placeholder="搜索日志内容..." style="width:200px" oninput="renderSystemLogs()">
+            <select id="logLevelFilter" class="form-input" style="width:120px" onchange="renderSystemLogs()">
+              <option value="all">全部类型</option>
+              <option value="success">成功 Success</option>
+              <option value="error">错误 Error</option>
+            </select>
+            <button class="btn primary" onclick="loadLogsPage()"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> 刷新日志</button>
+          </div>
+        </div>
+        <div class="card">
+          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Endpoint</th><th>Key/Source</th><th>Tokens</th><th>Status</th></tr></thead><tbody id="sysLogRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+        </div>
+      </section>
+
       <!-- Settings -->
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
@@ -689,7 +709,7 @@ if (response.output_text) {
 
 <script>
 const $=id=>document.getElementById(id);
-const pages={dashboard:'Dashboard',usage:'Usage',accounts:'Accounts',apikeys:'API Keys',conversations:'Conversations',proxies:'Proxy Pool',modeltest:'Model Test',settings:'Settings'};
+const pages={dashboard:'Dashboard',usage:'Usage',accounts:'Accounts',apikeys:'API Keys',conversations:'Conversations',proxies:'Proxy Pool',modeltest:'Model Test',logs:'System Logs',settings:'Settings'};
 const localeStorageKey='m365_locale';
 const localeSelectionKey='m365_locale_selected';
 const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
@@ -963,19 +983,21 @@ function showNotice(msg,type='info'){
 }
 
 function showPage(p){
-  ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','settings'].forEach(k=>{
-    $('page-'+k).style.display=k===p?'block':'none';
-    document.querySelector('[data-page="'+k+'"]')?.classList.toggle('active',k===p);
+  ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','logs','settings'].forEach(k=>{
+    const el=$('page-'+k);
+    if(el) el.style.display=k===p?'block':'none';
+    document.querySelectorAll('[data-page="'+k+'"]').forEach(btn=>btn.classList.toggle('active',k===p));
   });
-  $('pageTitle').textContent=pages[p];
+  if($('pageTitle')) $('pageTitle').textContent=pages[p]||p;
   if(p==='dashboard'){loadStats();loadOnboarding();loadAccounts();}
-  if(p==='usage')loadUsage();
-  if(p==='accounts')loadAccounts();
-  if(p==='apikeys')loadKeys();
-  if(p==='conversations')loadConversations();
-  if(p==='proxies')loadProxies();
-  if(p==='modeltest')loadModelTest();
-  if(p==='settings')loadSettings();
+  else if(p==='usage')loadUsage();
+  else if(p==='accounts')loadAccounts();
+  else if(p==='apikeys')loadKeys();
+  else if(p==='conversations')loadConversations();
+  else if(p==='proxies')loadProxies();
+  else if(p==='modeltest')loadModelTest();
+  else if(p==='logs')loadLogsPage();
+  else if(p==='settings')loadSettings();
 }
 
 let onboardingHidden=false;
@@ -1287,17 +1309,67 @@ async function toggleKey(id,revoked){
   catch(e){showNotice(e.message,'error');}
 }
 
-function openKeyModal(){$('keyModal').classList.add('open');$('keyResult').style.display='none';$('keyName').value='default';setTimeout(()=>$('keyName').focus(),50);}
+function openKeyModal(){
+  $('keyModal').classList.add('open');
+  $('keyResult').style.display='none';
+  $('keyName').value='default';
+  const btn = document.querySelector('#keyModal button[type="submit"]');
+  if(btn){ btn.disabled = false; btn.textContent = 'Create'; }
+  setTimeout(()=>$('keyName').focus(),50);
+}
 function closeKeyModal(){$('keyModal').classList.remove('open');}
 async function copyKey(){try{await navigator.clipboard.writeText($('keyValue').value);showNotice('已复制','success');}catch(e){}}
 async function createKey(e){
   e.preventDefault();
+  const btn = document.querySelector('#keyModal button[type="submit"]');
+  if(btn){ btn.disabled = true; btn.textContent = '创建中...'; }
   try{
     const d=await api('/api/admin/keys',{method:'POST',body:JSON.stringify({name:$('keyName').value||'default'})});
-    $('keyValue').value=d.key;$('keyResult').style.display='block';copyKey();loadKeys();
-  }catch(e){showNotice(e.message,'error');}
+    $('keyValue').value=d.key;
+    $('keyResult').style.display='block';
+    copyKey();
+    loadKeys();
+    showNotice('API Key 创建成功并已自动复制到剪贴板！','success');
+    if(btn){ btn.disabled = true; btn.textContent = '已创建 Key'; }
+  }catch(err){
+    showNotice(err.message,'error');
+    if(btn){ btn.disabled = false; btn.textContent = 'Create'; }
+  }
 }
 async function revokeKey(id){if(!confirm('确定删除此密钥？'))return;try{await api('/api/admin/keys?id='+id,{method:'DELETE'});loadKeys();}catch(e){showNotice(e.message,'error');}}
+
+let _sysLogsCache = [];
+async function loadLogsPage(){
+  try{
+    const d = await api('/api/usage/logs?limit=100');
+    _sysLogsCache = d.logs || [];
+    renderSystemLogs();
+  }catch(e){
+    if($('sysLogRows')) $('sysLogRows').innerHTML = `<tr><td colspan="6" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+function renderSystemLogs(){
+  const q = ($('logSearchInput')?.value || '').trim().toLowerCase();
+  const filter = $('logLevelFilter')?.value || 'all';
+  const list = _sysLogsCache.filter(x => {
+    if(filter==='success' && x.error) return false;
+    if(filter==='error' && !x.error) return false;
+    if(q && !((x.model||'') + ' ' + (x.endpoint||'') + ' ' + (x.api_key_prefix||'') + ' ' + (x.error||'')).toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const rows = $('sysLogRows');
+  if(!rows) return;
+  if(!list.length){ rows.innerHTML = '<tr><td colspan="6" class="empty">暂无相关日志记录</td></tr>'; return; }
+  rows.innerHTML = list.map(x => `<tr>
+    <td style="font-size:12px;color:var(--muted);white-space:nowrap">${new Date(x.time).toLocaleString()}</td>
+    <td style="font-size:12px;font-weight:600">${esc(x.model||'-')}</td>
+    <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
+    <td style="font-size:12px;color:var(--muted)"><code>${esc(x.api_key_prefix||'session')}</code></td>
+    <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b> tok</span></td>
+    <td>${x.error ? `<span class="usage-status err" title="${esc(x.error)}">Error</span>` : '<span class="usage-status">Success</span>'}</td>
+  </tr>`).join('');
+  try{ lucide.createIcons(); }catch(e){}
+}
 
 // ===== Usage page =====
 let usageDays=7, ugPageNo=0, ugTotal=0;
