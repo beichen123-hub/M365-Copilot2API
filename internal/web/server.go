@@ -359,6 +359,8 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/admin/deployment/check", s.deploymentCheck)
 	m.HandleFunc("/api/admin/debug/logs", s.debugList)
 	m.HandleFunc("/api/admin/debug/detail", s.debugDetail)
+	m.HandleFunc("/api/admin/syslogs", s.handleSysLogs)
+	m.HandleFunc("/api/admin/syslogs/clear", s.handleSysLogsClear)
 	m.HandleFunc("/api/health", s.health)
 	m.HandleFunc("/api/version", s.version)
 	m.HandleFunc("/api/update", s.update)

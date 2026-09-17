@@ -621,20 +621,25 @@ if (response.output_text) {
 
       <!-- System Logs -->
       <section id="page-logs" style="display:none">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap">
-          <div><h2 style="font-size:18px;font-weight:700">System Logs</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">查看系统运行日志、API 调用记录与历史调试信息</p></div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <input class="form-input" id="logSearchInput" placeholder="搜索日志内容..." style="width:200px" oninput="renderSystemLogs()">
-            <select id="logLevelFilter" class="form-input" style="width:120px" onchange="renderSystemLogs()">
-              <option value="all">全部类型</option>
-              <option value="success">成功 Success</option>
-              <option value="error">错误 Error</option>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap">
+          <div><h2 style="font-size:18px;font-weight:700">Gateway System Logs</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">实时网关控制台日志、底网报错、报错堆栈与 ChatHub WebSocket 追踪</p></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input class="form-input" id="sysLogSearch" placeholder="搜索关键字..." style="width:160px" oninput="renderSysLogs()">
+            <select id="sysLogLevel" class="form-input" style="width:110px" onchange="renderSysLogs()">
+              <option value="ALL">全部级别</option>
+              <option value="ERROR">错误 ERROR</option>
+              <option value="WARN">警告 WARN</option>
+              <option value="INFO">信息 INFO</option>
+              <option value="DEBUG">调试 DEBUG</option>
             </select>
-            <button class="btn primary" onclick="loadLogsPage()"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> 刷新日志</button>
+            <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="sysLogAutoRefresh" checked onchange="toggleSysLogAutoRefresh()"> 自动刷新</label>
+            <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="sysLogAutoScroll" checked> 滚动锁定</label>
+            <button class="btn" onclick="fetchSysLogs(true)"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> 刷新</button>
+            <button class="btn danger" onclick="clearSysLogs()"><i data-lucide="trash-2" style="width:14px;height:14px"></i> 清空</button>
           </div>
         </div>
-        <div class="card">
-          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Endpoint</th><th>Key/Source</th><th>Tokens</th><th>Status</th></tr></thead><tbody id="sysLogRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+        <div style="background:#0f172a;color:#f8fafc;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.65;padding:16px;border-radius:12px;height:560px;overflow-y:auto;border:1px solid #1e293b;box-shadow:var(--shadow)" id="sysLogConsole">
+          <div style="color:#64748b;font-style:italic">正在连接系统日志缓冲区...</div>
         </div>
       </section>
 
@@ -1349,37 +1354,96 @@ async function createKey(e){
 }
 async function revokeKey(id){if(!confirm('确定删除此密钥？'))return;try{await api('/api/admin/keys?id='+id,{method:'DELETE'});loadKeys();}catch(e){showNotice(e.message,'error');}}
 
-let _sysLogsCache = [];
+let _sysLogsCache = [], _sysLogLastID = 0, _sysLogTimer = null;
+
 async function loadLogsPage(){
-  try{
-    const d = await api('/api/usage/logs?limit=100');
-    _sysLogsCache = d.logs || [];
-    renderSystemLogs();
-  }catch(e){
-    if($('sysLogRows')) $('sysLogRows').innerHTML = `<tr><td colspan="6" class="empty">${esc(e.message)}</td></tr>`;
+  fetchSysLogs(true);
+  startSysLogAutoRefresh();
+}
+
+function startSysLogAutoRefresh(){
+  if(_sysLogTimer) return;
+  _sysLogTimer = setInterval(()=>{
+    const isVisible = document.visibilityState === 'visible';
+    const isLogsActive = document.getElementById('page-logs')?.style.display !== 'none';
+    const isChecked = $('sysLogAutoRefresh')?.checked;
+    if(isVisible && isLogsActive && isChecked){
+      fetchSysLogs(false);
+    }
+  }, 1500);
+}
+
+function toggleSysLogAutoRefresh(){
+  if($('sysLogAutoRefresh')?.checked){
+    startSysLogAutoRefresh();
+  } else if(_sysLogTimer) {
+    clearInterval(_sysLogTimer);
+    _sysLogTimer = null;
   }
 }
-function renderSystemLogs(){
-  const q = ($('logSearchInput')?.value || '').trim().toLowerCase();
-  const filter = $('logLevelFilter')?.value || 'all';
+
+async function fetchSysLogs(reset=false){
+  try{
+    if(reset){
+      _sysLogLastID = 0;
+      _sysLogsCache = [];
+    }
+    const d = await api('/api/admin/syslogs?since_id=' + _sysLogLastID + '&limit=500');
+    if(d.max_id) _sysLogLastID = d.max_id;
+    if(d.logs && d.logs.length){
+      _sysLogsCache = _sysLogsCache.concat(d.logs);
+      if(_sysLogsCache.length > 2000) _sysLogsCache = _sysLogsCache.slice(_sysLogsCache.length - 2000);
+    }
+    renderSysLogs();
+  }catch(e){
+    const con = $('sysLogConsole');
+    if(con && !_sysLogsCache.length) con.innerHTML = `<div style="color:#f87171">获取日志失败: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderSysLogs(){
+  const con = $('sysLogConsole');
+  if(!con) return;
+  const searchQuery = ($('sysLogSearch')?.value || '').trim().toLowerCase();
+  const selectedLevel = $('sysLogLevel')?.value || 'ALL';
+
   const list = _sysLogsCache.filter(x => {
-    if(filter==='success' && x.error) return false;
-    if(filter==='error' && !x.error) return false;
-    if(q && !((x.model||'') + ' ' + (x.endpoint||'') + ' ' + (x.api_key_prefix||'') + ' ' + (x.error||'')).toLowerCase().includes(q)) return false;
+    if(selectedLevel !== 'ALL' && x.level !== selectedLevel) return false;
+    if(searchQuery && !x.message.toLowerCase().includes(searchQuery)) return false;
     return true;
   });
-  const rows = $('sysLogRows');
-  if(!rows) return;
-  if(!list.length){ rows.innerHTML = '<tr><td colspan="6" class="empty">暂无相关日志记录</td></tr>'; return; }
-  rows.innerHTML = list.map(x => `<tr>
-    <td style="font-size:12px;color:var(--muted);white-space:nowrap">${new Date(x.time).toLocaleString()}</td>
-    <td style="font-size:12px;font-weight:600">${esc(x.model||'-')}</td>
-    <td><span class="usage-status">${esc((x.endpoint||'-').replace('/v1/',''))}</span></td>
-    <td style="font-size:12px;color:var(--muted)"><code>${esc(x.api_key_prefix||'session')}</code></td>
-    <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b> tok</span></td>
-    <td>${x.error ? `<span class="usage-status err" title="${esc(x.error)}">Error</span>` : '<span class="usage-status">Success</span>'}</td>
-  </tr>`).join('');
-  try{ lucide.createIcons(); }catch(e){}
+
+  if(!list.length){
+    con.innerHTML = '<div style="color:#64748b;font-style:italic">暂无符合条件的控制台日志</div>';
+    return;
+  }
+
+  con.innerHTML = list.map(x => {
+    const t = new Date(x.time).toLocaleTimeString();
+    let levelColor = '#34d399'; // INFO
+    if(x.level === 'ERROR') levelColor = '#f87171';
+    else if(x.level === 'WARN') levelColor = '#fbbf24';
+    else if(x.level === 'DEBUG') levelColor = '#94a3b8';
+
+    return `<div style="margin-bottom:3px;word-break:break-all"><span style="color:#64748b;margin-right:8px">[${t}]</span><span style="color:${levelColor};font-weight:700;margin-right:8px">[${x.level}]</span><span style="color:#f1f5f9">${esc(x.message)}</span></div>`;
+  }).join('');
+
+  if($('sysLogAutoScroll')?.checked){
+    con.scrollTop = con.scrollHeight;
+  }
+}
+
+async function clearSysLogs(){
+  if(!confirm('确定清空网关底层日志缓冲区？')) return;
+  try{
+    await api('/api/admin/syslogs/clear', {method: 'POST'});
+    _sysLogsCache = [];
+    _sysLogLastID = 0;
+    renderSysLogs();
+    showNotice('底层日志已清空', 'success');
+  }catch(e){
+    showNotice(e.message, 'error');
+  }
 }
 
 // ===== Usage page =====
