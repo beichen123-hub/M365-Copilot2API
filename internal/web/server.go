@@ -1161,6 +1161,8 @@ type responseFormat struct {
 
 func modelTone(model string) string {
 	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-image-2", "image-2", "dall-e-3", "dall-e-2", "designer":
+		return "Magic"
 	case "gpt-5.2":
 		return "Gpt_5_2_Chat"
 	case "gpt-5.2-reasoning":
@@ -2602,7 +2604,22 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
-	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
+	if len(res.Images) == 0 {
+		if urls := extractImageURLs(res.RawResult); len(urls) > 0 {
+			res.Images = urls
+		}
+	}
+	if len(res.Images) == 0 {
+		if urls := extractImageURLs(res.Text); len(urls) > 0 {
+			res.Images = urls
+		}
+	}
+	for _, imgURL := range res.Images {
+		if !strings.Contains(res.Text, imgURL) {
+			res.Text = strings.TrimSpace(res.Text) + "\n\n![image](" + imgURL + ")"
+		}
+	}
+	log.Printf("[debug] res.Text bytes=%d content=%q images=%d", len(res.Text), res.Text, len(res.Images))
 	created := time.Now().Unix()
 
 	if body.Stream {
