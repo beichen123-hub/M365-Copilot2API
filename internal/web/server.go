@@ -2502,6 +2502,52 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		if res.Timestamps.RequestSent != "" {
 			_ = sw2.raw(": m365-metrics " + mustJSON(res.Timestamps) + "\n\n")
 		}
+	} else if isImageModel(body.Model) {
+		currentAcc := acc
+		var currentRes chathub.Result
+		var currentErr error
+		for attempt := 0; attempt < maxAccountProbe; attempt++ {
+			reqCopy := answerReq
+			reqCopy.Tone = "Magic"
+			currentRes, currentErr = s.chatWithAccount(ctx, currentAcc.ID, chathub.Account{AccessToken: currentAcc.AccessToken, OID: currentAcc.OID, TID: currentAcc.TID}, reqCopy)
+			if currentErr == nil {
+				if len(currentRes.Images) == 0 {
+					if urls := extractImageURLs(currentRes.RawResult); len(urls) > 0 {
+						currentRes.Images = urls
+					}
+				}
+				if len(currentRes.Images) == 0 {
+					if urls := extractImageURLs(currentRes.Text); len(urls) > 0 {
+						currentRes.Images = urls
+					}
+				}
+			}
+			if currentErr == nil && len(currentRes.Images) > 0 {
+				res = currentRes
+				acc = currentAcc
+				err = nil
+				break
+			}
+			log.Printf("[image-model-failover] account %s (%s) failed or returned no images (err=%v, images=%d), trying next account...", currentAcc.ID, currentAcc.Email, currentErr, len(currentRes.Images))
+			if s.accountPool != nil {
+				s.accountPool.MarkImageLimited(currentAcc.ID)
+			}
+			if body.AccountID != "" {
+				res = currentRes
+				acc = currentAcc
+				err = currentErr
+				break
+			}
+			next, nerr := s.nextHealthyImageAccount(currentAcc.ID)
+			if nerr != nil || next.ID == "" {
+				log.Printf("[image-model-failover] no more healthy image accounts available after attempt %d", attempt+1)
+				res = currentRes
+				acc = currentAcc
+				err = currentErr
+				break
+			}
+			currentAcc = next
+		}
 	} else {
 		res, err = s.chatWithAccount(ctx, acc.ID, account, answerReq)
 		if IsEmptyCompletion(err) && tone != "magic" {
