@@ -1131,6 +1131,51 @@ func (s *Server) nextHealthyAccount(avoidID string) (auth.AccountToken, error) {
 	return auth.AccountToken{}, fmt.Errorf("no healthy account available for failover")
 }
 
+func (s *Server) resolveImageAccount(accountID string) (auth.AccountToken, error) {
+	if accountID != "" {
+		result, err := s.tokens.EnsureValid(accountID)
+		if err == nil {
+			s.mu.Lock()
+			s.lastHealthyAccount = accountID
+			s.mu.Unlock()
+		}
+		return result, err
+	}
+	for i := 0; i < maxAccountProbe; i++ {
+		acc, ok := s.tokens.Next()
+		if !ok {
+			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+		}
+		if s.accountAvailable(acc.ID) && (s.accountPool == nil || s.accountPool.ImageGenAvailable(acc.ID)) {
+			result, err := s.tokens.EnsureValid(acc.ID)
+			if err == nil {
+				s.mu.Lock()
+				s.lastHealthyAccount = acc.ID
+				s.mu.Unlock()
+				return result, nil
+			}
+		}
+	}
+	return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 60, Body: "all accounts are cooling down or image quota exhausted; try again later"}
+}
+
+func (s *Server) nextHealthyImageAccount(avoidID string) (auth.AccountToken, error) {
+	for i := 0; i < maxAccountProbe; i++ {
+		acc, ok := s.tokens.Next()
+		if !ok {
+			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+		}
+		if avoidID != "" && acc.ID == avoidID {
+			continue
+		}
+		if !s.accountAvailable(acc.ID) || (s.accountPool != nil && !s.accountPool.ImageGenAvailable(acc.ID)) {
+			continue
+		}
+		return s.tokens.EnsureValid(acc.ID)
+	}
+	return auth.AccountToken{}, fmt.Errorf("no healthy image account available for failover")
+}
+
 type chatBody struct {
 	Model                 string                   `json:"model,omitempty"`
 	AccountID             string                   `json:"accountId"`
@@ -1786,7 +1831,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	accountID := body.AccountID
-	acc, err := s.resolveAccount(accountID)
+	var acc auth.AccountToken
+	if isImageModel(body.Model) {
+		acc, err = s.resolveImageAccount(accountID)
+	} else {
+		acc, err = s.resolveAccount(accountID)
+	}
 	if err != nil {
 		log.Printf("[account-route] resolve failed requested=%q err=%v", accountID, err)
 		writeUpstreamErrorWithAccount(w, err, accountID)
@@ -2642,7 +2692,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if s.accountPool != nil {
 				s.accountPool.MarkImageLimited(currentAcc.ID)
 			}
-			next, nerr := s.nextHealthyAccount(currentAcc.ID)
+			next, nerr := s.nextHealthyImageAccount(currentAcc.ID)
 			if nerr != nil || next.ID == "" {
 				break
 			}
