@@ -2529,7 +2529,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				break
 			}
 			log.Printf("[image-model-failover] account %s (%s) failed or returned no images (err=%v, images=%d), trying next account...", currentAcc.ID, currentAcc.Email, currentErr, len(currentRes.Images))
-			if s.accountPool != nil {
+			if s.accountPool != nil && (errors.Is(currentErr, chathub.ErrImageLimit) || isImageLimitNotice(currentRes.Text)) {
 				s.accountPool.MarkImageLimited(currentAcc.ID)
 			}
 			if body.AccountID != "" {
