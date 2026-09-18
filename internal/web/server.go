@@ -2509,7 +2509,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		for attempt := 0; attempt < maxAccountProbe; attempt++ {
 			reqCopy := answerReq
 			reqCopy.Tone = "Magic"
-			currentRes, currentErr = s.chatWithAccount(ctx, currentAcc.ID, chathub.Account{AccessToken: currentAcc.AccessToken, OID: currentAcc.OID, TID: currentAcc.TID}, reqCopy)
+			attemptCtx, attemptCancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ImageTimeoutSeconds)*time.Second)
+			currentRes, currentErr = s.chatWithAccount(attemptCtx, currentAcc.ID, chathub.Account{AccessToken: currentAcc.AccessToken, OID: currentAcc.OID, TID: currentAcc.TID}, reqCopy)
+			attemptCancel()
 			if currentErr == nil {
 				if len(currentRes.Images) == 0 {
 					if urls := extractImageURLs(currentRes.RawResult); len(urls) > 0 {
