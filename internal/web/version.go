@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	Version     = "dev"
-	Commit      = "unknown"
-	BuildTime   = "unknown"
+	Version     = "0.4.0"
+	Commit      = "7c3bcf9"
+	BuildTime   = "2026-09-18"
 	startedAt   = time.Now()
 	updateCheck uint32
 )
