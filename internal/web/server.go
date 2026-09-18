@@ -2636,6 +2636,38 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			res.Images = urls
 		}
 	}
+	if isImageModel(body.Model) && len(res.Images) == 0 && body.AccountID == "" {
+		currentAcc := acc
+		for attempt := 0; attempt < maxAccountProbe; attempt++ {
+			if s.accountPool != nil {
+				s.accountPool.MarkImageLimited(currentAcc.ID)
+			}
+			next, nerr := s.nextHealthyAccount(currentAcc.ID)
+			if nerr != nil || next.ID == "" {
+				break
+			}
+			log.Printf("[image-model-failover] id=%s attempt=%d from_acc=%s to_acc=%s", requestID, attempt+1, currentAcc.ID, next.ID)
+			currentAcc = next
+			res2, err2 := s.chatWithAccount(ctx, currentAcc.ID, chathub.Account{AccessToken: currentAcc.AccessToken, OID: currentAcc.OID, TID: currentAcc.TID}, answerReq)
+			if err2 == nil {
+				res = res2
+				acc = currentAcc
+				if len(res.Images) == 0 {
+					if urls := extractImageURLs(res.RawResult); len(urls) > 0 {
+						res.Images = urls
+					}
+				}
+				if len(res.Images) == 0 {
+					if urls := extractImageURLs(res.Text); len(urls) > 0 {
+						res.Images = urls
+					}
+				}
+				if len(res.Images) > 0 {
+					break
+				}
+			}
+		}
+	}
 	for _, imgURL := range res.Images {
 		if !strings.Contains(res.Text, imgURL) {
 			res.Text = strings.TrimSpace(res.Text) + "\n\n![image](" + imgURL + ")"
