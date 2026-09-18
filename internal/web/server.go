@@ -1159,6 +1159,15 @@ type responseFormat struct {
 	JSONSchema map[string]any `json:"json_schema,omitempty"`
 }
 
+func isImageModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-image-2", "image-2", "dall-e-3", "dall-e-2", "designer":
+		return true
+	default:
+		return false
+	}
+}
+
 func modelTone(model string) string {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case "gpt-image-2", "image-2", "dall-e-3", "dall-e-2", "designer":
@@ -1700,7 +1709,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// single message.text field. This keeps system/developer instructions,
 	// history, and the current user turn distinguishable.
 	var prompt string
-	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
+	if isImageModel(body.Model) {
+		prompt, body.Attachments = extractImagePrompt(body.Messages, body.Attachments)
+		body.ConversationID = ""
+		body.SessionID = ""
+		log.Printf("[image-model-isolate] id=%s model=%s extracted_prompt_len=%d", requestID, body.Model, len(prompt))
+	} else {
+		prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
+	}
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
 	fmt.Printf("[multimodal-entry] messages=%d attachments=%d prompt_len=%d\n", len(body.Messages), len(body.Attachments), len(prompt))
 	prompt = strings.TrimSpace(prompt)

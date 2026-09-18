@@ -79,3 +79,37 @@ func flattenPromptMessages(messages []oaiMsg, attachments []chathub.Attachment) 
 	}
 	return strings.TrimSpace(b.String()), attachments
 }
+
+func extractImagePrompt(messages []oaiMsg, attachments []chathub.Attachment) (string, []chathub.Attachment) {
+	var target *oaiMsg
+	for i := len(messages) - 1; i >= 0; i-- {
+		role := strings.ToLower(strings.TrimSpace(messages[i].Role))
+		if role == "user" && messages[i].Content != nil {
+			target = &messages[i]
+			break
+		}
+	}
+	if target == nil {
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Content != nil {
+				target = &messages[i]
+				break
+			}
+		}
+	}
+
+	var userText string
+	var msgFiles []chathub.Attachment
+	if target != nil {
+		userText, msgFiles = parseContent(target.Content)
+	}
+
+	merged := append(msgFiles, attachments...)
+	userText = strings.TrimSpace(userText)
+	if userText == "" {
+		return "", merged
+	}
+
+	prompt := fmt.Sprintf("Create an image: %s. Return the image directly.", userText)
+	return prompt, merged
+}
