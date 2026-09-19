@@ -630,7 +630,12 @@ if (response.output_text) {
 <!-- Key Modal -->
 <div class="modal-overlay" id="keyModal">
   <div class="modal">
-    <h3>Create API key</h3>
+    <div class="modal-head">
+      <div>
+        <h3>Create API key</h3>
+      </div>
+      <button type="button" class="modal-close" onclick="closeKeyModal()"><i data-lucide="x" style="width:15px;height:15px"></i></button>
+    </div>
     <p class="subtitle">此密钥用于认证 OpenAI / Anthropic 兼容接口的请求。完整密钥仅显示一次——请立即复制保存。创建后可在密钥列表中点击"使用密钥"查看客户端配置示例。</p>
     <form onsubmit="createKey(event)">
       <div class="form-group">
@@ -645,6 +650,9 @@ if (response.output_text) {
     </form>
     <div id="keyResult" style="display:none">
       <div class="highlight-box"><b>Copy and save this key now</b><div class="copy-field"><input class="form-input" id="keyValue" readonly><button class="btn-sm btn" onclick="copyKey()">Copy</button></div></div>
+      <div class="modal-actions" style="margin-top:12px">
+        <button type="button" class="btn primary" onclick="closeKeyModal()">完成</button>
+      </div>
     </div>
   </div>
 </div>
@@ -676,7 +684,7 @@ if (response.output_text) {
       <button class="modal-close" onclick="closeUseKey()"><i data-lucide="x" style="width:15px;height:15px"></i></button>
     </div>
     <div class="copy-field">
-      <input class="form-input" id="useKeyVal" readonly onclick="this.select()">
+      <input class="form-input" id="useKeyVal" placeholder="粘贴或输入完整密钥（自动联动下方配置）" oninput="renderUkeFiles()" onclick="this.select()">
       <button class="btn btn-sm" onclick="copyUseKey()">Copy</button>
     </div>
     <div class="uke-tabs" id="useKeyClients"></div>
@@ -688,6 +696,38 @@ if (response.output_text) {
 <div class="notice" id="notice" style="display:none"></div>
 
 <script>
+
+async function safeCopy(text) {
+  if (!text) { showNotice('内容为空', 'error'); return; }
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showNotice('已复制', 'success');
+      return;
+    } catch(e) {}
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (ok) {
+      showNotice('已复制', 'success');
+    } else {
+      showNotice('复制失败，请手动选择复制', 'error');
+    }
+  } catch(e) {
+    showNotice('复制失败，请手动选择复制', 'error');
+  }
+}
+
 const $=id=>document.getElementById(id);
 const pages={dashboard:'Dashboard',usage:'Usage',accounts:'Accounts',apikeys:'API Keys',conversations:'Conversations',proxies:'Proxy Pool',modeltest:'Model Test',settings:'Settings'};
 const localeStorageKey='m365_locale';
@@ -1289,7 +1329,7 @@ async function toggleKey(id,revoked){
 
 function openKeyModal(){$('keyModal').classList.add('open');$('keyResult').style.display='none';$('keyName').value='default';setTimeout(()=>$('keyName').focus(),50);}
 function closeKeyModal(){$('keyModal').classList.remove('open');}
-async function copyKey(){try{await navigator.clipboard.writeText($('keyValue').value);showNotice('已复制','success');}catch(e){}}
+async function copyKey(){safeCopy($('keyValue').value);}
 async function createKey(e){
   e.preventDefault();
   try{
@@ -1450,13 +1490,13 @@ async function openUseKey(id){
 function closeUseKey(){$('useKeyModal').classList.remove('open');}
 function renderUkeTabs(){
   $('useKeyClients').innerHTML=ukeClients.map(c=>`<button class="uke-tab ${c.id===ukeClient?'active':''}" onclick="ukeClient='${c.id}';renderUkeTabs();renderUkeFiles()"><i data-lucide="${c.id==='codex'?'terminal':c.id==='curl'?'square-terminal':c.id==='claude'?'sparkles':'braces'}"></i>${c.label}</button>`).join('');
-  $('useKeyOs').innerHTML=ukeOs.map(o=>`<button class="uke-tab ${o.id===ukeOsSel?'active':''}" onclick="ukeOsSel='${o.id}';renderUkeFiles()">${o.label}</button>`).join('');
+  $('useKeyOs').innerHTML=ukeOs.map(o=>`<button class="uke-tab ${o.id===ukeOsSel?'active':''}" onclick="ukeOsSel='${o.id}';renderUkeTabs();renderUkeFiles()">${o.label}</button>`).join('');
   try{lucide.createIcons();}catch(e){}
 }
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function ukeFile(path,content){
   return `<div class="uke-file">
-    <div class="uke-file-head"><code>${esc(path)}</code><button class="btn btn-sm" onclick="navigator.clipboard.writeText(this.closest('.uke-file').querySelector('pre').textContent.trim());showNotice('已复制','success')">Copy</button></div>
+    <div class="uke-file-head"><code>${esc(path)}</code><button class="btn btn-sm" onclick="safeCopy(this.closest('.uke-file').querySelector('pre').textContent.trim())" >Copy</button></div>
     <pre>${esc(content)}</pre>
   </div>`;
 }
@@ -1526,8 +1566,8 @@ goals = true`;
 }
 async function copyUseKey(){
   const v=$('useKeyVal').value;
-  if(!v){showNotice('完整密钥不可用','error');return;}
-  try{await navigator.clipboard.writeText(v);showNotice('已复制','success');}catch(e){}
+  if(!v){showNotice('请输入或粘贴密钥后再复制','error');return;}
+  safeCopy(v);
 }
 
 async function loadConversations(){
